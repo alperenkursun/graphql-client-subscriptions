@@ -1,8 +1,10 @@
 import { createServer } from "node:http";
-import { createPubSub, createSchema, createYoga } from "graphql-yoga";
-import { nanoid } from "nanoid";
+import { createYoga, createSchema, createPubSub } from "graphql-yoga";
+import { WebSocketServer } from "ws";
+import { useServer } from "graphql-ws/lib/use/ws";
 import { gql } from "graphql-tag";
 import { events, locations, users, participants } from "./data.js";
+import { nanoid } from "nanoid";
 
 const pubSub = createPubSub();
 
@@ -388,16 +390,51 @@ const resolvers = {
   },
 };
 
-// Provide your schema
 const yoga = createYoga({
-  graphqlEndpoint: "/",
-  schema: createSchema({
-    typeDefs,
-    resolvers,
-  }),
+  schema: createSchema({ typeDefs, resolvers }),
+  graphiql: {
+    subscriptionsProtocol: "WS",
+    endpoint: "/graphql",
+  },
+  graphqlEndpoint: "/graphql",
+  cors: {
+    origin: "*",
+  },
 });
 
 const server = createServer(yoga);
+
+const wsServer = new WebSocketServer({
+  server,
+  path: "/graphql",
+});
+
+useServer(
+  {
+    execute: (args) => args.rootValue.execute(args),
+    subscribe: (args) => args.rootValue.subscribe(args),
+    onSubscribe: async (ctx, msg) => {
+      const { schema, execute, subscribe, contextFactory, parse, validate } =
+        yoga.getEnveloped({
+          ...ctx,
+          req: ctx.extra.request,
+          socket: ctx.extra.socket,
+          params: msg.payload,
+        });
+
+      return {
+        schema,
+        operationName: msg.payload.operationName,
+        document: parse(msg.payload.query),
+        variableValues: msg.payload.variables,
+        contextValue: await contextFactory(),
+        rootValue: { execute, subscribe },
+      };
+    },
+  },
+  wsServer
+);
+
 server.listen(4000, () => {
-  console.info("Server is running on http://localhost:4000");
+  console.log("Server is running on http://localhost:4000/graphql");
 });
